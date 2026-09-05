@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { recognize } from 'tesseract.js';
-import { classifyImageWithBackend } from '../../services/imageClassification';
+import { classifyImageWithBackend, imageContentUrl, searchImages } from '../../services/imageClassification';
 
 const categories = [
   ['Government & Identity', 'Identity, passports and official records'],
@@ -53,7 +53,12 @@ export default function MemoryWorkspace({ activeSection, onNavigate }) {
   const [sort, setSort] = useState('newest');
   const [filterCategory, setFilterCategory] = useState('All categories');
   const [filterImportance, setFilterImportance] = useState('All importance');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [location, setLocation] = useState('');
   const [selectedImage, setSelectedImage] = useState(null);
+    const [searchLoading, setSearchLoading] = useState(false);
+    const [searchError, setSearchError] = useState('');
   const inputRef = useRef(null);
   const tokenRef = useRef(0);
   const urlsRef = useRef([]);
@@ -86,6 +91,35 @@ export default function MemoryWorkspace({ activeSection, onNavigate }) {
       return right.lastModified - left.lastModified;
     });
   }, [filterCategory, filterImportance, images, searchQuery, sort]);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchError('');
+      return undefined;
+    }
+    let canceled = false;
+    const timer = window.setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const result = await searchImages(searchQuery, {
+          category: filterCategory === 'All categories' ? '' : filterCategory,
+          importance: filterImportance === 'All importance' ? '' : filterImportance,
+          dateFrom,
+          dateTo,
+          location,
+          sort: sort === 'newest' || sort === 'oldest' || sort === 'name' ? sort : 'relevance',
+        });
+        if (canceled) return;
+        setImages((current) => mergeSearchResults(current, result.items));
+        setSearchError('');
+      } catch (error) {
+        if (!canceled) setSearchError('Server search is unavailable; showing local indexed matches.');
+      } finally {
+        if (!canceled) setSearchLoading(false);
+      }
+    }, 250);
+    return () => { canceled = true; window.clearTimeout(timer); };
+  }, [dateFrom, dateTo, filterCategory, filterImportance, location, searchQuery, sort]);
 
   const scanFolder = async () => {
     if (window.showDirectoryPicker) {
@@ -215,6 +249,12 @@ export default function MemoryWorkspace({ activeSection, onNavigate }) {
           setFilterCategory={setFilterCategory}
           filterImportance={filterImportance}
           setFilterImportance={setFilterImportance}
+          dateFrom={dateFrom}
+          setDateFrom={setDateFrom}
+          dateTo={dateTo}
+          setDateTo={setDateTo}
+          location={location}
+          setLocation={setLocation}
           sort={sort}
           setSort={setSort}
           view={view}
@@ -226,6 +266,8 @@ export default function MemoryWorkspace({ activeSection, onNavigate }) {
           onSelect={setSelectedImage}
           onUpdate={updateImage}
           onRemove={removeImage}
+          searchLoading={searchLoading}
+          searchError={searchError}
         />
       ) : null}
 
@@ -252,11 +294,13 @@ function DashboardHome({ stats, images, status, loading, progress, onNavigate, o
   </>;
 }
 
-function LibraryView({ activeSection, images, allImages, searchQuery, setSearchQuery, filterCategory, setFilterCategory, filterImportance, setFilterImportance, sort, setSort, view, setView, status, loading, progress, onScan, onSelect, onUpdate, onRemove }) {
+function LibraryView({ activeSection, images, allImages, searchQuery, setSearchQuery, filterCategory, setFilterCategory, filterImportance, setFilterImportance, dateFrom, setDateFrom, dateTo, setDateTo, location, setLocation, sort, setSort, view, setView, status, loading, progress, onScan, onSelect, onUpdate, onRemove, searchLoading, searchError }) {
   const sectionImages = activeSection === 'Important' ? images.filter((image) => image.importance === 'Important' || image.importance === 'Critical') : activeSection === 'Duplicates' ? findDuplicates(images) : activeSection === 'Recent' ? [...images].sort((a, b) => b.lastModified - a.lastModified) : images;
   return <section className="surface-panel library-panel">
     <div className="library-heading"><div><p className="eyebrow">{activeSection}</p><h4>{activeSection === 'Search' ? 'Search your indexed memory' : `${sectionImages.length} image${sectionImages.length === 1 ? '' : 's'}`}</h4></div><button className="primary-button compact" type="button" onClick={onScan}><FolderIcon /> Scan Folder</button></div>
-    <div className="library-controls"><label className="library-search"><SearchIcon active={false} /><input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search OCR, categories, descriptions, filenames..." /></label><select value={filterCategory} onChange={(event) => setFilterCategory(event.target.value)}><option>All categories</option>{categories.map(([name]) => <option key={name}>{name}</option>)}</select><select value={filterImportance} onChange={(event) => setFilterImportance(event.target.value)}><option>All importance</option><option>Critical</option><option>Important</option><option>Normal</option><option>Low</option></select><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Filename</option><option value="importance">Importance</option></select><div className="view-toggle"><button className={view === 'grid' ? 'selected' : ''} type="button" onClick={() => setView('grid')} aria-label="Grid view">▦</button><button className={view === 'list' ? 'selected' : ''} type="button" onClick={() => setView('list')} aria-label="List view">☷</button></div></div>
+    <div className="library-controls"><label className="library-search"><SearchIcon active={false} /><input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search OCR, categories, descriptions, filenames..." /></label><select value={filterCategory} onChange={(event) => setFilterCategory(event.target.value)}><option>All categories</option>{categories.map(([name]) => <option key={name}>{name}</option>)}</select><select value={filterImportance} onChange={(event) => setFilterImportance(event.target.value)}><option>All importance</option><option>Critical</option><option>Important</option><option>Normal</option><option>Low</option></select><input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} aria-label="Date from" /><input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} aria-label="Date to" /><input type="search" value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Location" aria-label="Location" /><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="relevance">Relevance</option><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Filename</option><option value="importance">Importance</option></select><div className="view-toggle"><button className={view === 'grid' ? 'selected' : ''} type="button" onClick={() => setView('grid')} aria-label="Grid view">▦</button><button className={view === 'list' ? 'selected' : ''} type="button" onClick={() => setView('list')} aria-label="List view">☷</button></div></div>
+    {searchLoading ? <ProgressState status="Searching OCR, keywords, descriptions, and visual embeddings..." progress={65} /> : null}
+    {searchError ? <p className="scan-status">{searchError}</p> : null}
     {loading ? <ProgressState status={status} progress={progress} /> : sectionImages.length ? view === 'grid' ? <ImageGrid images={sectionImages} onSelect={onSelect} onUpdate={onUpdate} onRemove={onRemove} /> : <ImageTable images={sectionImages} onSelect={onSelect} onUpdate={onUpdate} onRemove={onRemove} /> : <EmptyState title={allImages.length ? 'No matching images' : 'No images indexed'} text={allImages.length ? 'Try a different search or filter.' : 'Select a folder to build your library.'} />}
   </section>;
 }
@@ -282,7 +326,7 @@ function SettingsView() {
 }
 
 function DetailsPanel({ image, onClose, onUpdate, onRemove }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel" role="dialog" aria-modal="true"><button className="close-button" type="button" onClick={onClose} aria-label="Close details">×</button><img className="details-preview" src={image.previewUrl} alt={image.filename} /><div className="details-content"><p className="eyebrow">Image details</p><h4>{image.filename}</h4><span className="category-label">{image.category}</span><dl><dt>Path</dt><dd>{image.filePath}</dd><dt>File type</dt><dd>{image.fileType} · {image.fileSize}</dd><dt>Modified</dt><dd>{image.modifiedDate}</dd><dt>Location</dt><dd>{image.location}</dd><dt>Importance</dt><dd><select value={image.importance} onChange={(event) => onUpdate(image.id, { importance: event.target.value })}><option>Critical</option><option>Important</option><option>Normal</option><option>Low</option></select></dd></dl><div className="details-section"><strong>AI description</strong><p>{image.visualDescription || 'No visual description returned. Enable the local vision model for captions.'}</p></div><div className="details-section"><strong>OCR text</strong><p>{image.ocrText || 'No text detected.'}</p></div><div className="details-actions"><button className="primary-button" type="button" onClick={() => navigator.clipboard?.writeText(image.filePath)}>Copy path</button><button className="danger-button" type="button" onClick={() => onRemove(image)}>Remove index</button></div></div></aside></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel" role="dialog" aria-modal="true"><button className="close-button" type="button" onClick={onClose} aria-label="Close details">×</button><img className="details-preview" src={image.previewUrl || imageContentUrl(image.id)} alt={image.filename} /><div className="details-content"><p className="eyebrow">Image details</p><h4>{image.filename}</h4><span className="category-label">{image.category}</span><dl><dt>Path</dt><dd>{image.filePath || 'Stored in MemoryOS'}</dd><dt>File type</dt><dd>{image.fileType || image.mime_type} · {image.fileSize || formatFileSize(image.file_size)}</dd><dt>Modified</dt><dd>{image.modifiedDate || image.created_at}</dd><dt>Location</dt><dd>{image.location || 'Not set'}</dd><dt>Importance</dt><dd><select value={image.importance || 'Normal'} onChange={(event) => onUpdate(image.id, { importance: event.target.value })}><option>Critical</option><option>Important</option><option>Normal</option><option>Low</option></select></dd></dl><div className="details-section"><strong>Why this matched</strong><p>{image.ocr_text ? `OCR: ${image.ocr_text.slice(0, 100)}` : 'Semantic similarity or metadata match'}</p></div><div className="details-section"><strong>AI description</strong><p>{image.visualDescription || image.visual_description || 'No visual description returned.'}</p></div><div className="details-section"><strong>OCR text</strong><p>{image.ocrText || image.ocr_text || 'No text detected.'}</p></div><div className="details-actions"><button className="primary-button" type="button" onClick={() => navigator.clipboard?.writeText(image.filePath || image.filename)}>Copy path</button><button className="danger-button" type="button" onClick={() => onRemove(image)}>Remove index</button></div></div></aside></div>;
 }
 
 function SummaryCard({ label, value, detail }) { return <article className="summary-card"><span>{label}</span><strong>{value.toLocaleString()}</strong><small>{detail}</small></article>; }
@@ -301,3 +345,4 @@ function buildKeywords(file, text, description) { return [...new Set(`${file.nam
 function suggestImportance(file, text) { return /passport|aadhaar|medical|prescription|certificate|tax|bank/.test(`${file.name} ${text}`.toLowerCase()) ? 'Important' : 'Normal'; }
 function importanceRank(value) { return { Critical: 4, Important: 3, Normal: 2, Low: 1 }[value] || 0; }
 function findDuplicates(images) { const groups = new Map(); images.forEach((image) => { const key = `${image.size}-${image.fileType}`; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(image); }); const duplicates = []; groups.forEach((group) => { if (group.length > 1) duplicates.push(...group.slice(1)); }); return duplicates; }
+function mergeSearchResults(current, results) { return results.map((item) => ({ ...item, id: item.id, previewUrl: imageContentUrl(item.id), fileSize: formatFileSize(item.file_size), fileType: getType({ name: item.filename, type: item.mime_type }), modifiedDate: item.created_at ? formatDate(item.created_at) : '', ocrText: item.ocr_text || '', visualDescription: item.visual_description || '', keywords: item.keywords || '', lastModified: item.created_at ? Date.parse(item.created_at) : 0, filePath: current.find((image) => image.id === item.id)?.filePath || '', location: item.location || 'Not set' })); }

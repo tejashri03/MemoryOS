@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+backend/.env
+frontend/dist/
+node_modules/

@@ -2,10 +2,8 @@ import os
 import re
 from functools import lru_cache
 
-try:
-    import pytesseract
-except ModuleNotFoundError:
-    pytesseract = None
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 CATEGORIES = [
     "Government & Identity",
@@ -175,7 +173,10 @@ def classify_text(filename: str, ocr_text: str = "", visual_description: str = "
 def _load_captioner():
     if os.getenv("MEMORYOS_ENABLE_VISION_MODEL", "0") != "1":
         return None
-    from transformers import BlipForConditionalGeneration, BlipProcessor
+    try:
+        from transformers import BlipForConditionalGeneration, BlipProcessor
+    except ImportError:
+        return None
 
     model_name = os.getenv("MEMORYOS_VISION_MODEL", "Salesforce/blip-image-captioning-base")
     return (
@@ -194,17 +195,67 @@ def _describe_image(image) -> str:
     return processor.decode(output[0], skip_special_tokens=True)
 
 
+@lru_cache(maxsize=1)
+def _load_ocr():
+    try:
+        from paddleocr import PaddleOCR
+    except ImportError:
+        return None
+
+    return PaddleOCR(
+        lang=os.getenv("MEMORYOS_OCR_LANGUAGE", "en"),
+        use_doc_orientation_classify=True,
+        use_doc_unwarping=False,
+        use_textline_orientation=True,
+    )
+
+
+def _read_paddle_result(result):
+    texts = []
+    scores = []
+    for item in result or []:
+        data = item.json if hasattr(item, "json") else item
+        if isinstance(data, str):
+            import json
+            data = json.loads(data)
+        data = data.get("res", data) if isinstance(data, dict) else {}
+        texts.extend(str(text) for text in data.get("rec_texts", []) if text)
+        scores.extend(float(score) for score in data.get("rec_scores", []) if score is not None)
+    return "\n".join(texts).strip(), (sum(scores) / len(scores) if scores else 0.0)
+
+
+def _extract_ocr(image):
+    try:
+        engine = _load_ocr()
+        if engine is None:
+            return "", 0.0, "failed"
+        result = engine.predict(np.asarray(image))
+        text, confidence = _read_paddle_result(result)
+        if text:
+            return text, round(confidence, 4), "complete"
+
+        # Enhancement is a retry for faint scans, rather than a transformation of every image.
+        enhanced = ImageOps.grayscale(image)
+        enhanced = ImageEnhance.Contrast(enhanced).enhance(1.8).filter(ImageFilter.MedianFilter(3))
+        text, confidence = _read_paddle_result(engine.predict(np.asarray(enhanced.convert("RGB"))))
+        return text, round(confidence, 4), "complete"
+    except Exception:
+        return "", 0.0, "failed"
+
+
 def classify_image(image, filename: str, mime_type: str) -> dict:
-    if pytesseract is None:
-        raise RuntimeError("pytesseract is required for image classification. Install backend requirements first.")
-    ocr_text = pytesseract.image_to_string(image).strip()
+    ocr_text, ocr_confidence, ocr_status = _extract_ocr(image)
     visual_description = _describe_image(image)
     category, confidence, _ = classify_text(filename, ocr_text, visual_description)
+    source_tokens = _tokens(f"{filename} {ocr_text} {visual_description}")
     return {
         "filename": filename,
         "mime_type": mime_type,
         "category": category,
         "confidence": confidence,
         "ocr_text": ocr_text,
+        "ocr_confidence": ocr_confidence,
+        "ocr_status": ocr_status,
         "visual_description": visual_description,
+        "keywords": ", ".join(sorted(source_tokens)),
     }
