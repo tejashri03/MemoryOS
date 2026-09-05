@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import DashboardPage from './pages/Dashboard/MemoryWorkspace';
 
 const navigation = [
@@ -15,11 +15,25 @@ const navigation = [
 
 export default function App() {
   const [activeSection, setActiveSection] = useState('Dashboard');
+  const searchButtonRef = useRef(null);
 
   const activeConfig = useMemo(
     () => navigation.find((item) => item.id === activeSection) ?? navigation[0],
     [activeSection],
   );
+
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+        event.preventDefault();
+        searchButtonRef.current?.focus();
+        setActiveSection('Search');
+      }
+    };
+
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -70,7 +84,7 @@ export default function App() {
           </div>
 
           <div className="topbar-actions">
-            <button type="button" className="header-search" onClick={() => setActiveSection('Search')}>
+            <button ref={searchButtonRef} type="button" className="header-search" onClick={() => setActiveSection('Search')}>
               <SearchIcon active={false} />
               <span>Search images, categories, OCR text...</span>
               <kbd>/</kbd>

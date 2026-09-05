@@ -6,8 +6,19 @@ The scanner now supports these categories: Government & Identity, Education, Med
 Finance, Bills & Receipts, Work & Professional, Travel, Events & Celebrations, People & Family,
 Nature & Places, Animals & Pets, Food & Drinks, Screenshots, Notes & Documents, and Others.
 
-The backend combines Tesseract OCR with keyword scoring. Optional BLIP captioning adds visual
-descriptions for photos when `MEMORYOS_ENABLE_VISION_MODEL=1`. Results are stored in MySQL.
+The backend combines Tesseract OCR with weighted phrase and keyword scoring. OCR evidence is
+weighted above filenames, category contradictions are penalized, and ambiguous evidence falls
+back to `Others` with zero confidence instead of forcing a guess. Optional BLIP captioning adds
+visual descriptions for photos when `MEMORYOS_ENABLE_VISION_MODEL=1`; those captions are scored
+as visual evidence. Results are stored in MySQL.
+
+The pure `classify_text` function is covered by backend regression tests and can be run without
+Tesseract installed:
+
+```text
+cd backend
+python -m unittest discover -v
+```
 
 ```text
 mysql < database/schema.sql
