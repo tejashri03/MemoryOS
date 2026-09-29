@@ -1,0 +1,3 @@
+# Add one JSON object per labeled image. Search records may include retrieved_ids from a recorded API result.
+{"image_path":"/path/to/aadhaar.jpg","filename":"aadhaar.jpg","ocr_text":"Aadhaar card name date of birth address","expected_category":"Government & Identity","expected_subcategory":"Aadhaar","expected_keywords":["aadhaar","identity"]}
+{"image_path":"/path/to/dog.jpg","filename":"dog.jpg","ocr_text":"","visual_description":"Dog sitting in a garden","expected_category":"Animals & Pets","expected_keywords":["dog","pet"]}

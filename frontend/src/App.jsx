@@ -3,10 +3,12 @@ import DashboardPage from './pages/Dashboard/MemoryWorkspace';
 
 const navigation = [
   { id: 'Dashboard', label: 'Dashboard', icon: DashboardIcon },
-  { id: 'My Images', label: 'My Images', icon: GalleryIcon },
+  { id: 'My Images', label: 'All Images', icon: GalleryIcon },
   { id: 'Categories', label: 'Categories', icon: CategoryIcon },
   { id: 'Important', label: 'Important', icon: StarIcon },
   { id: 'Duplicates', label: 'Duplicates', icon: DuplicateIcon },
+  { id: 'Needs Review', label: 'Needs Review', icon: ReviewIcon },
+  { id: 'Processing', label: 'Processing', icon: RecentIcon },
   { id: 'Recent', label: 'Recent', icon: RecentIcon },
   { id: 'Search', label: 'Search', icon: SearchIcon },
   { id: 'Settings', label: 'Settings', icon: SettingsIcon },
@@ -170,6 +172,10 @@ function RecentIcon({ active }) {
 
 function ShieldIcon({ active }) {
   return <svg viewBox="0 0 24 24" className={active ? 'nav-icon active-icon' : 'nav-icon'} aria-hidden="true"><path d="M12 3.8 19 6v5.2c0 4.5-2.9 7.5-7 9-4.1-1.5-7-4.5-7-9V6l7-2.2Z" /><path d="m9 12 2 2 4-4" /></svg>;
+}
+
+function ReviewIcon({ active }) {
+  return <svg viewBox="0 0 24 24" className={active ? 'nav-icon active-icon' : 'nav-icon'} aria-hidden="true"><path d="M12 4.5 20 18H4L12 4.5Z" /><path d="M12 9v4M12 16h.01" /></svg>;
 }
 
 function BellIcon() {
