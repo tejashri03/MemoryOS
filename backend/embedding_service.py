@@ -26,6 +26,32 @@ CLASSIFICATION_CATEGORIES = (
     "Work & Professional", "Travel", "Events & Celebrations", "People & Family",
     "Nature & Places", "Animals & Pets", "Food & Drinks", "Screenshots", "Notes & Documents", "Others",
 )
+CLASSIFICATION_PROMPTS_PER_CATEGORY = 3
+
+
+def _classification_prompt_variants():
+    return [
+        variant
+        for description in CLASSIFICATION_PROMPTS
+        for variant in (
+            description,
+            f"The image shows {description[0].lower()}{description[1:]}",
+            f"This is an example of {description[0].lower()}{description[1:]}",
+        )
+    ]
+
+
+def _combine_classification_prompts(vectors, category_count, prompts_per_category):
+    vectors = np.asarray(vectors, dtype=np.float32)
+    expected_count = category_count * prompts_per_category
+    if vectors.ndim != 2 or vectors.shape[0] != expected_count:
+        raise ValueError(f"Expected {expected_count} prompt embeddings")
+
+    prompt_norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    normalized_prompts = np.divide(vectors, prompt_norms, out=np.zeros_like(vectors), where=prompt_norms != 0)
+    combined = normalized_prompts.reshape(category_count, prompts_per_category, -1).mean(axis=1)
+    category_norms = np.linalg.norm(combined, axis=1, keepdims=True)
+    return np.divide(combined, category_norms, out=np.zeros_like(combined), where=category_norms != 0)
 
 
 @lru_cache(maxsize=1)
@@ -75,9 +101,11 @@ def _classification_embeddings():
         return None
     model, _, tokenizer, torch = loaded
     with torch.inference_mode():
-        vectors = model.encode_text(tokenizer(list(CLASSIFICATION_PROMPTS)))
-        vectors = vectors / vectors.norm(dim=-1, keepdim=True)
-    return vectors.cpu().numpy().astype(np.float32)
+        vectors = model.encode_text(tokenizer(_classification_prompt_variants()))
+    vectors = vectors.cpu().numpy().astype(np.float32)
+    return _combine_classification_prompts(
+        vectors, len(CLASSIFICATION_CATEGORIES), CLASSIFICATION_PROMPTS_PER_CATEGORY
+    )
 
 
 def generate_category_scores(image_embedding):

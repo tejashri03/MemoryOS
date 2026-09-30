@@ -14,13 +14,12 @@ from PIL import Image
 
 from classifier import CATEGORIES, classify_image
 from embedding_service import calculate_similarity, generate_category_scores, generate_image_embedding, generate_text_embedding
+from retrieval import compose_evidence_answer, contextual_links, evidence_adaptive_weights, find_duplicate_groups, is_relevant_candidate, score_candidate
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-TEXT_WEIGHT = float(os.getenv("MEMORYOS_TEXT_WEIGHT", "0.6"))
-SEMANTIC_WEIGHT = float(os.getenv("MEMORYOS_SEMANTIC_WEIGHT", "0.4"))
-SEARCH_CANDIDATE_LIMIT = int(os.getenv("MEMORYOS_SEARCH_CANDIDATE_LIMIT", "100"))
 OWNER_ID = os.getenv("MEMORYOS_OWNER_ID", "local-user")
+DUPLICATE_SIMILARITY_THRESHOLD = float(os.getenv("MEMORYOS_DUPLICATE_SIMILARITY_THRESHOLD", "0.85"))
 
 app = FastAPI(title="MemoryOS semantic image classifier")
 app.add_middleware(
@@ -232,54 +231,16 @@ def resolve_review(image_id: int, decision: dict = Body(...)):
 
 
 @app.get("/api/duplicates")
-def duplicate_images():
+def duplicate_images(visual_threshold: float = Query(DUPLICATE_SIMILARITY_THRESHOLD, ge=0.5, le=0.999)):
     with closing(database_connection()) as connection:
         with closing(connection.cursor(dictionary=True)) as cursor:
-            cursor.execute(f"""SELECT {IMAGE_FIELDS} FROM images
+            cursor.execute(f"""SELECT {IMAGE_FIELDS}, image_embedding FROM images
                 WHERE owner_id = %s AND phash IS NOT NULL ORDER BY created_at DESC""", (OWNER_ID,))
-            images = [serialise_image(item) for item in cursor.fetchall()]
-    groups = []
-    children = {}
-    root = None
+            images = cursor.fetchall()
     for image in images:
-        fingerprint = image["phash"]
-        value = int(fingerprint, 16)
-        best_index = None
-        best_distance = 65
-        if root is not None:
-            pending = [root]
-            while pending:
-                candidate_index = pending.pop()
-                candidate_value = int(groups[candidate_index]["fingerprint"], 16)
-                distance = (value ^ candidate_value).bit_count()
-                if distance <= 6 and distance < best_distance:
-                    best_index, best_distance = candidate_index, distance
-                pending.extend(child for edge, child in children[candidate_index].items() if distance - 6 <= edge <= distance + 6)
-        best = groups[best_index] if best_index is not None else None
-        if best is None:
-            groups.append({"fingerprint": fingerprint, "type": "exact_duplicate", "similarity": 100, "items": [image]})
-            new_index = len(groups) - 1
-            children[new_index] = {}
-            if root is None:
-                root = new_index
-            else:
-                node = root
-                while True:
-                    edge = (value ^ int(groups[node]["fingerprint"], 16)).bit_count()
-                    if edge in children[node]:
-                        node = children[node][edge]
-                    else:
-                        children[node][edge] = new_index
-                        break
-        else:
-            similarity = round((64 - best_distance) / 64 * 100)
-            best["type"] = "exact_duplicate" if best_distance == 0 else "near_duplicate"
-            best["similarity"] = min(best["similarity"], similarity)
-            best["items"].append(image)
-    for group in groups:
-        hashes = {item.get("file_hash") for item in group["items"]}
-        group["type"] = "exact_duplicate" if len(hashes) == 1 and None not in hashes else "near_duplicate"
-    return {"groups": [group for group in groups if len(group["items"]) > 1]}
+        image["image_embedding"] = np_from_bytes(image.get("image_embedding"))
+        serialise_image(image)
+    return {"groups": find_duplicate_groups(images, visual_threshold)}
 
 
 @app.get("/api/search")
@@ -333,42 +294,65 @@ def search_images(
     with closing(database_connection()) as connection:
         with closing(connection.cursor(dictionary=True)) as cursor:
             cursor.execute(
-                f"""SELECT COUNT(*) AS total FROM images WHERE {where}
-                AND MATCH(filename, ocr_text, visual_description, keywords, category, subcategory, location)
-                AGAINST (%s IN BOOLEAN MODE)""",
-                [*values, text_query],
-            )
-            total_matches = cursor.fetchone()["total"]
-            cursor.execute(
                 f"""SELECT id, filename, file_size, image_width, image_height, mime_type, category, subcategory,
                     file_path, file_modified_at, file_hash, phash, location, importance, importance_score, protection_status,
                     ocr_text, ocr_confidence, ocr_status, visual_description, keywords, confidence,
                     classification_candidates, classification_evidence, classification_margin, processing_status, created_at, image_embedding,
                     (MATCH(filename, ocr_text, visual_description, keywords, category, subcategory, location)
                       AGAINST (%s IN BOOLEAN MODE)) AS text_score
-                    FROM images WHERE {where}
-                    ORDER BY text_score DESC, id DESC LIMIT %s""",
-                [text_query, *values, SEARCH_CANDIDATE_LIMIT],
+                    FROM images WHERE {where} ORDER BY created_at DESC""",
+                [text_query, *values],
             )
             candidates = cursor.fetchall()
     for item in candidates:
         embedding = np_from_bytes(item.pop("image_embedding", None))
-        item["semantic_score"] = round((max(-1.0, calculate_similarity(embedding, semantic_query)) + 1.0) / 2.0, 6)
-        item["text_score"] = float(item.get("text_score") or 0)
-        item["final_score"] = round(TEXT_WEIGHT * normalize_text_score(item["text_score"]) + SEMANTIC_WEIGHT * item["semantic_score"], 6)
-        item["created_at"] = item["created_at"].isoformat() if item.get("created_at") else None
+        cosine_similarity = calculate_similarity(embedding, semantic_query)
+        semantic_score = max(0.0, min(1.0, (cosine_similarity - 0.15) / 0.3)) if semantic_query is not None else 0.0
+        ranking = score_candidate(
+            query,
+            item,
+            semantic_score,
+            float(item.get("text_score") or 0),
+            semantic_query is not None,
+        )
+        item["semantic_score"] = ranking["signals"]["semantic"]
+        item["_ranking_signals"] = ranking["signals"]
         item.pop("text_score", None)
-    candidates.sort(key=lambda item: item["final_score"], reverse=True if sort == "relevance" else False)
-    if sort in ("newest", "oldest", "name"):
+    search_weights = evidence_adaptive_weights(
+        query,
+        [item["_ranking_signals"] for item in candidates],
+        semantic_query is not None,
+    )
+    for item in candidates:
+        signals = item.pop("_ranking_signals")
+        item["final_score"] = round(sum(signals[name] * search_weights[name] for name in search_weights), 6)
+        ranking = {"signals": signals, "weights": search_weights, "score": item["final_score"]}
+        item["match_reason"] = build_match_reason(query, item, ranking)
+    candidates = [
+        item for item in candidates
+        if is_relevant_candidate(item["match_reason"]["signals"], item["final_score"])
+    ]
+    total_matches = len(candidates)
+    if sort == "importance":
+        candidates.sort(key=lambda item: (item.get("importance_score") or 0, item.get("importance") or ""), reverse=True)
+    elif sort in ("newest", "oldest", "name"):
         key = "created_at" if sort != "name" else "filename"
         candidates.sort(key=lambda item: item.get(key) or "", reverse=sort == "newest")
+    else:
+        candidates.sort(key=lambda item: item["final_score"], reverse=True)
     for item in candidates:
         serialise_image(item)
-        item["match_reason"] = build_match_reason(query, item)
-    return {"items": candidates[offset:offset + limit], "total": total_matches, "page": page, "limit": limit, "candidate_limit": SEARCH_CANDIDATE_LIMIT}
+    return {
+        "items": candidates[offset:offset + limit],
+        "total": total_matches,
+        "page": page,
+        "limit": limit,
+        "ranking_weights": search_weights,
+        "answer": compose_evidence_answer(query, candidates),
+    }
 
 
-def build_match_reason(query: str, item: dict) -> dict:
+def build_match_reason(query: str, item: dict, ranking: dict) -> dict:
     terms = set(re.findall(r"[a-z0-9]+", query.lower()))
     ocr = set(re.findall(r"[a-z0-9]+", (item.get("ocr_text") or "").lower()))
     filename = set(re.findall(r"[a-z0-9]+", (item.get("filename") or "").lower()))
@@ -380,6 +364,9 @@ def build_match_reason(query: str, item: dict) -> dict:
         "category": sorted(terms.intersection(category)),
         "keywords": sorted(terms.intersection(keywords)),
         "semantic": item.get("semantic_score", 0) >= 0.65,
+        "signals": ranking["signals"],
+        "weights": ranking["weights"],
+        "score": ranking["score"],
     }
 
 
@@ -398,6 +385,30 @@ def image_content(image_id: int):
     if not item or not item["image_data"]:
         raise HTTPException(status_code=404, detail="Image content not found")
     return Response(content=item["image_data"], media_type=item["mime_type"])
+
+
+@app.get("/api/images/{image_id}/related")
+def related_images(image_id: int, limit: int = Query(8, ge=1, le=30)):
+    with closing(database_connection()) as connection:
+        with closing(connection.cursor(dictionary=True)) as cursor:
+            cursor.execute(
+                f"SELECT {IMAGE_FIELDS}, image_embedding FROM images WHERE id = %s AND owner_id = %s",
+                (image_id, OWNER_ID),
+            )
+            target = cursor.fetchone()
+            if not target:
+                raise HTTPException(status_code=404, detail="Image not found")
+            cursor.execute(
+                f"SELECT {IMAGE_FIELDS}, image_embedding FROM images WHERE owner_id = %s AND id <> %s",
+                (OWNER_ID, image_id),
+            )
+            candidates = cursor.fetchall()
+    target["image_embedding"] = np_from_bytes(target.get("image_embedding"))
+    serialise_image(target)
+    for candidate in candidates:
+        candidate["image_embedding"] = np_from_bytes(candidate.get("image_embedding"))
+        serialise_image(candidate)
+    return {"items": contextual_links(target, candidates, limit)}
 
 
 def np_from_bytes(value):
@@ -487,3 +498,9 @@ async def classify_upload(
     result["duplicate_of"] = duplicate_of
     result["embedding_status"] = "complete" if embedding is not None else "disabled"
     return result
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("PORT", "8000")))

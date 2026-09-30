@@ -63,6 +63,12 @@ export async function listDuplicates() {
   return response.json();
 }
 
+export async function getRelatedImages(id) {
+  const response = await fetch(`${apiUrl}/api/images/${id}/related`);
+  if (!response.ok) throw new Error(`Related memory lookup failed with status ${response.status}`);
+  return response.json();
+}
+
 export async function updateImageMetadata(id, changes) {
   const response = await fetch(`${apiUrl}/api/images/${id}`, {
     method: 'PATCH',
@@ -77,6 +83,26 @@ export async function deleteImage(id, confirm = false) {
   const response = await fetch(`${apiUrl}/api/images/${id}?confirm=${String(confirm)}`, { method: 'DELETE' });
   if (!response.ok) throw new Error(`Image deletion failed with status ${response.status}`);
   return response.json();
+}
+
+export async function deleteImageFromBackend(id, confirm = false) {
+  return deleteImage(id, confirm);
+}
+
+export async function updateImageImportance(id, important) {
+  const updated = await updateImageMetadata(id, {
+    importance: important ? 'Important' : 'Normal',
+    importance_score: important ? 25 : 0,
+    protection_status: important ? 'protected' : 'unprotected',
+  });
+  return {
+    ...updated,
+    importance_level: updated.importance,
+    protection_status: updated.protection_status === 'protected',
+    protection_reason: important ? 'Marked important by you.' : '',
+    importance_breakdown: {},
+    user_marked_important: important,
+  };
 }
 
 export function imageContentUrl(id) {

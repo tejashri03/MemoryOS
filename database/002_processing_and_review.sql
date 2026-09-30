@@ -13,6 +13,6 @@ ALTER TABLE images
 ALTER TABLE images
   ADD UNIQUE INDEX uq_images_owner_hash (owner_id, file_hash),
   ADD INDEX idx_images_phash (phash),
-  ADD INDEX idx_images_path (file_path),
+  ADD INDEX idx_images_path (file_path(191)),
   ADD INDEX idx_images_processing (processing_status),
   ADD INDEX idx_images_protection (protection_status);
